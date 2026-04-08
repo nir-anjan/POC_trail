@@ -55,10 +55,18 @@ def generate_master_data(config_path: str = "config.yaml", seed: int = 42) -> Si
         state.supplier_lead_time_days[code] = random.randint(14, 49)  # 2–7 weeks
         state.supplier_items[code] = []
 
-    # 4. Items — uniformly assigned to suppliers
+    # 4. Items — load from demand_snacks.yaml if available, else generic
+    snacks_path = "demand_snacks.yaml"
+    if os.path.exists(snacks_path):
+        with open(snacks_path) as f:
+            snacks_cfg = yaml.safe_load(f)
+        product_list = list(snacks_cfg.get("products", {}).keys())
+        print(f"  Found {len(product_list)} items in snacks config.")
+    else:
+        product_list = [f"ITEM_{str(i).zfill(4)}" for i in range(1, n_items + 1)]
+
     sup_list = list(state.suppliers.keys())
-    for i in range(1, n_items + 1):
-        code       = f"ITEM_{str(i).zfill(4)}"
+    for i, code in enumerate(product_list):
         case_pack  = random.choice([6, 12, 24, 48, 100])
         category   = random.choice(CATEGORIES)
         velocity   = random.choice(VELOCITY_CLASSES)
@@ -80,6 +88,9 @@ def generate_master_data(config_path: str = "config.yaml", seed: int = 42) -> Si
         state.item_supplier[code] = sup
         state.supplier_items[sup].append(code)
 
+    # Align item_count with what we actually loaded
+    state_item_count = len(state.items)
+
     # 5. Initialise all inventory to 0 (seeded later by SimulationEngine)
     for s in state.stores:
         for it in state.items:
@@ -91,7 +102,7 @@ def generate_master_data(config_path: str = "config.yaml", seed: int = 42) -> Si
 
     # 6. Validation
     assert len(state.stores)    == n_stores,    f"Expected {n_stores} stores, got {len(state.stores)}"
-    assert len(state.items)     == n_items,     f"Expected {n_items} items, got {len(state.items)}"
+    assert len(state.items)     == state_item_count, f"Expected {state_item_count} items, got {len(state.items)}"
     assert len(state.dcs)       == n_dcs,       f"Expected {n_dcs} DCs, got {len(state.dcs)}"
 
     return state

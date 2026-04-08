@@ -1,68 +1,102 @@
-"""
-demand_generator.py
-Generates synthetic demand.csv for the specified number of days.
-Usage: python3 demand_generator.py
-"""
+import yaml
 import csv
 import random
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+import os
 
-from src.data.master_data import generate_master_data
+def load_config(file_path):
+    with open(file_path, 'r') as f:
+        return yaml.safe_load(f)
 
+def get_weekly_seasonality_factor(date, config, rng):
+    # Day name in lowercase to match yaml keys (monday, tuesday, etc.)
+    day_name = date.strftime('%A').lower()
+    weekly_cfg = config.get('weekly_seasonality', {})
+    return weekly_cfg.get(day_name, 1.0)
 
-def generate_demand_csv(
-    filename: str,
-    start_date: date,
-    days: int = 70,
-    seed: int = 42,
-):
-    random.seed(seed)
-    state  = generate_master_data(seed=seed)
-    stores = list(state.stores.keys())
-    items  = list(state.items.keys())
+def get_annual_seasonality_factor(date, config):
+    # ISO week number (1-52/53)
+    _, week_num, _ = date.isocalendar()
+    annual_cfg = config.get('annual_seasonality', {})
+    weeks_map = annual_cfg.get('weeks', {})
+    # Return the factor for the week, default to 1.0
+    return weeks_map.get(week_num, 1.0)
 
-    # ONLY the first item as specified earlier
-    single_item = items[0]
+def get_noise(config, rng):
+    noise_cfg = config.get('noise', {})
+    min_val = noise_cfg.get('min', 1.0)
+    max_val = noise_cfg.get('max', 1.0)
+    return rng.uniform(min_val, max_val)
 
-    # Base demand per store: between 10–50 units/day
-    base_rates = {s: random.randint(10, 50) for s in stores}
+def generate_demand(config, start_date, end_date, num_stores, output_file):
+    products = config.get('products', {})
+    promotions = config.get('promotions', {})
+    promo_multiplier = promotions.get('default_multiplier', 1.0)
+    
+    stores = [f"Store_{i:03d}" for i in range(1, num_stores + 1)]
+    
+    with open(output_file, 'w', newline='') as csvfile:
+        fieldnames = ['Date', 'StoreCode', 'ItemCode', 'DemandQty']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
 
-    with open(filename, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Date", "StoreCode", "ItemCode", "DemandQty"])
-
-        for d in range(days):
-            current_date = start_date + timedelta(days=d)
-            date_str     = current_date.strftime("%Y-%m-%d")
-
-            # Saturday/Sunday bump
-            is_weekend = current_date.weekday() >= 5
-            weekend_mult = 1.5 if is_weekend else 1.0
-
-            for s in stores:
-                base = base_rates[s] * weekend_mult
-                
-                # High base noise (e.g. ±50%)
-                noise = random.randint(int(-base * 0.5), int(base * 0.7))
-                
-                # Random "Promo" Spike (10% chance)
-                spike_mult = 1.0
-                if random.random() < 0.10:
-                    spike_mult = random.uniform(2.5, 5.0)
-                
-                # Random "Lull" (5% chance)
-                if random.random() < 0.05:
-                    qty = 0
-                else:
-                    qty = int(max(0, (base + noise) * spike_mult))
-
-                if qty >= 0:
-                    writer.writerow([date_str, s, single_item, qty])
-
-    total_rows = sum(1 for _ in open(filename)) - 1
-    print(f"Generated {filename}: {total_rows:,} rows | {days} days | {len(stores)} stores")
-
+        current_date = start_date
+        while current_date <= end_date:
+            date_str = current_date.strftime('%Y-%m-%d')
+            
+            # Pre-calculate factors that are the same for all products on this day
+            annual_fact = get_annual_seasonality_factor(current_date, config)
+            
+            for store in stores:
+                for product_id, product_data in products.items():
+                    avg_daily_velocity = product_data.get('avg_daily_velocity', 0)
+                    
+                    # Deterministic Seeding: Seed per row for reproducibility
+                    seed_str = f"{date_str}_{store}_{product_id}"
+                    rng = random.Random(seed_str)
+                    
+                    weekly_fact = get_weekly_seasonality_factor(current_date, config, rng)
+                    noise_val = get_noise(config, rng)
+                    
+                    # Final Formula as requested:
+                    # final_demand = avg_daily_velocity * annual_seasonality[week] * weekly_seasonality[day] * noise * promotions
+                    final_demand = round(
+                        avg_daily_velocity * 
+                        annual_fact * 
+                        weekly_fact * 
+                        noise_val * 
+                        promo_multiplier
+                    )
+                    
+                    writer.writerow({
+                        'Date': date_str,
+                        'StoreCode': store,
+                        'ItemCode': product_id,
+                        'DemandQty': final_demand
+                    })
+            
+            current_date += timedelta(days=1)
 
 if __name__ == "__main__":
-    start = date(2024, 1, 1)
-    generate_demand_csv("demand.csv", start, days=70)
+    # ── Projects Paths
+    CONFIG_PATH = 'demand_snacks.yaml'
+    OUTPUT_PATH = 'demand.csv'
+    
+    # ── Load Project Master Config
+    with open('config.yaml') as f:
+        master_cfg = yaml.safe_load(f)
+    
+    config = load_config(CONFIG_PATH)
+    
+    # ── Simulation range derived from config.yaml
+    start_str = master_cfg.get("start_date", "2024-01-01")
+    sim_days  = master_cfg.get("simulation_days", 70)
+    
+    START_DATE = datetime.strptime(start_str, "%Y-%m-%d")
+    END_DATE   = START_DATE + timedelta(days=sim_days - 1)
+    
+    NUM_STORES = master_cfg.get("site_count_store", 10) 
+    
+    print(f"Generating demand for {START_DATE.date()} to {END_DATE.date()}...")
+    generate_demand(config, START_DATE, END_DATE, NUM_STORES, OUTPUT_PATH)
+    print(f"Demand generated and saved to {OUTPUT_PATH}")

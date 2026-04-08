@@ -1,2 +1,14 @@
 ItemCode,Category,VelocityClass,LifecycleProfile,CasePackSize,SizeGroup,SizeRank,UnitCost
-ITEM_0001,Beverages,medium,steady,12,Small,1,29.73
+potato_chips,Beverages,medium,steady,12,Small,1,29.73
+tortilla_chips,Snacks,medium,growth,6,Small,5,28.28
+popcorn,Beverages,lumpy,decay,48,Small,2,38.06
+nuts_trail_mix,Dairy,slow,growth,48,Medium,3,47.88
+cookies,Snacks,lumpy,steady,6,Large,5,42.45
+chocolates,Snacks,lumpy,steady,24,,,4.4
+carbonated_soft_drinks,Personal Care,slow,growth,24,Small,2,2.77
+bottled_water,Snacks,medium,steady,24,,,14.26
+fruit_juices,Beverages,slow,decay,24,Medium,1,33.67
+energy_drinks,Personal Care,medium,growth,100,Medium,3,23.38
+sports_drinks,Beverages,slow,steady,100,Medium,3,41.18
+tea_rtd,Dairy,fast,growth,48,Large,4,11.03
+coffee_rtd,Personal Care,lumpy,growth,48,Large,5,7.41

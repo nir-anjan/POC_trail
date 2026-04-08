@@ -1,0 +1,114 @@
+meta:
+  name: saltysnack_beverages
+  version: 1.0
+  description: Product-level demand config using seasonality + weekly pattern + noise
+
+products:
+  potato_chips:
+    avg_daily_velocity: 120
+  tortilla_chips:
+    avg_daily_velocity: 90
+  popcorn:
+    avg_daily_velocity: 70
+  nuts_trail_mix:
+    avg_daily_velocity: 60
+  cookies:
+    avg_daily_velocity: 100
+  chocolates:
+    avg_daily_velocity: 85
+  carbonated_soft_drinks:
+    avg_daily_velocity: 150
+  bottled_water:
+    avg_daily_velocity: 140
+  fruit_juices:
+    avg_daily_velocity: 110
+  energy_drinks:
+    avg_daily_velocity: 95
+  sports_drinks:
+    avg_daily_velocity: 105
+  tea_rtd:
+    avg_daily_velocity: 80
+  coffee_rtd:
+    avg_daily_velocity: 75
+
+annual_seasonality:
+  type: weekly_index
+  weeks:
+    1: 1.059
+    2: 0.883
+    3: 0.924
+    4: 0.923
+    5: 1.046
+    6: 1.323
+    7: 0.834
+    8: 0.863
+    9: 0.858
+    10: 0.919
+    11: 0.881
+    12: 0.874
+    13: 0.927
+    14: 0.863
+    15: 0.904
+    16: 0.906
+    17: 0.895
+    18: 0.975
+    19: 1.007
+    20: 0.982
+    21: 1.095
+    22: 1.106
+    23: 1.034
+    24: 1.059
+    25: 1.068
+    26: 1.105
+    27: 1.440
+    28: 1.015
+    29: 1.062
+    30: 1.016
+    31: 1.042
+    32: 1.082
+    33: 1.043
+    34: 1.006
+    35: 1.073
+    36: 1.100
+    37: 0.978
+    38: 0.950
+    39: 0.922
+    40: 0.972
+    41: 0.976
+    42: 0.978
+    43: 0.965
+    44: 0.994
+    45: 0.928
+    46: 0.906
+    47: 0.946
+    48: 1.033
+    49: 0.908
+    50: 1.043
+    51: 1.040
+    52: 1.046
+
+weekly_distribution:
+  monday: 0.13
+  tuesday: 0.13
+  wednesday: 0.14
+  thursday: 0.14
+  friday: 0.15
+  saturday: 0.16
+  sunday: 0.15
+
+weekly_seasonality:
+  monday: 1.00
+  tuesday: 1.00
+  wednesday: 1.02
+  thursday: 1.03
+  friday: 1.10
+  saturday: 1.18
+  sunday: 1.12
+
+noise:
+  type: multiplicative
+  min: 0.9
+  max: 1.1
+
+promotions:
+  default_multiplier: 1.0
