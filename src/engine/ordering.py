@@ -1,129 +1,138 @@
+"""
+ordering.py  –  Threshold-based DC → Store replenishment
+Triggered DAILY for each (store, item):
+  If on_hand_store < min_inventory AND no pending order:
+    order_qty = forecast_horizon_days × avg_daily_demand + safety_stock_days × avg_daily
+    Create InTransitOrder with lead_time_min–lead_time_max days arrival
+    Mark (store, item) as pending
+
+Also creates CustomerOrderHeader/Line (True Demand) weekly on Mondays.
+"""
+import random
 from datetime import date, timedelta
-from src.models.state import SimulationState
+from src.models.state import SimulationState, InTransitOrder
 from src.demand.demand_loader import DemandLoader
 from src.utils.exporter import Exporter
-from collections import defaultdict
-import math
-import uuid
 
-def create_customer_orders(state: SimulationState, current_date: date, demand_loader: DemandLoader, exporter: Exporter):
-    """
-    Step 2: Customer Order Creation (MONDAY ONLY).
-    Aggregate weekly demand (Mon-Sun).
-    Write CustomerOrderHeader and CustomerOrderLine.
-    """
-    # Assuming current_date is Monday
-    start_date = current_date
-    
-    order_id_prefix = f"CUST_ORD_{start_date.strftime('%Y%m%d')}"
-    
+
+# ────────────────────────────────────────────────────────────────────────────
+# Customer Order Creation (True Demand log — Monday only)
+# ────────────────────────────────────────────────────────────────────────────
+def create_customer_orders(
+    state: SimulationState,
+    week_start: date,
+    demand_loader: DemandLoader,
+    exporter: Exporter,
+    week_id: str,
+):
     for store in state.stores.values():
-        order_id = f"{order_id_prefix}_{store.store_code}"
-        
-        # Write header
-        exporter.record_customer_order_header(order_id, start_date, store.store_code)
-        
-        has_lines = False
+        order_number = f"CO_{week_id}_{store.store_code}"
+        exporter.record_customer_order_header(
+            order_number=order_number,
+            store_code=store.store_code,
+            week_id=week_id,
+            order_date=week_start,
+        )
+        line_num = 1
         for item in state.items.values():
             weekly_demand = sum(
-                demand_loader.get_demand(store.store_code, item.item_code, start_date + timedelta(days=d))
+                demand_loader.get_demand(
+                    store.store_code, item.item_code, week_start + timedelta(days=d)
+                )
                 for d in range(7)
             )
-            
             if weekly_demand > 0:
-                has_lines = True
-                exporter.record_customer_order_line(order_id, item.item_code, weekly_demand)
+                exporter.record_customer_order_line(
+                    order_number=order_number,
+                    line_number=line_num,
+                    store_code=store.store_code,
+                    item_code=item.item_code,
+                    week_id=week_id,
+                    order_qty=weekly_demand,
+                )
+                line_num += 1
 
-def compute_store_needs(state: SimulationState, current_date: date, demand_loader: DemandLoader, coverage_days: int = 14) -> dict:
+
+# ────────────────────────────────────────────────────────────────────────────
+# Threshold-based replenishment check (runs EVERY DAY per store/item)
+# ────────────────────────────────────────────────────────────────────────────
+def check_and_trigger_replenishment(
+    state: SimulationState,
+    current_date: date,
+    demand_loader: DemandLoader,
+    exporter: Exporter,
+    replenishment_cfg: dict,
+    rng: random.Random,
+    order_counter: list,      # mutable counter [n] passed from engine
+):
     """
-    Step 3: Compute Store Replenishment Need (DAILY).
-    avg_daily = moving average of last 28 days demand
-    target = avg_daily * coverage_days
-    need = max(0, target - on_hand[store, item])
-    Returns: dict[(store_code, item_code)] -> int
+    For each (store, item):
+      1. Compute avg_daily demand from last 7 days
+      2. Compute min_inventory = min_inventory_days × avg_daily
+      3. If on_hand < min_inventory AND NOT pending → place order
+         order_qty = (forecast_horizon_days + safety_stock_days) × avg_daily
+         lead_time = random.randint(lead_time_min, lead_time_max)
+         Schedule InTransitOrder(arrival = today + lead_time)
     """
-    needs = {}
-    
+    lt_min        = replenishment_cfg.get("lead_time_min_days",    1)
+    lt_max        = replenishment_cfg.get("lead_time_max_days",    2)
+    fh_days       = replenishment_cfg.get("forecast_horizon_days", 4)
+    ss_days       = replenishment_cfg.get("safety_stock_days",     1)
+    min_inv_days  = replenishment_cfg.get("min_inventory_days",    2)
+    prevent_dup   = replenishment_cfg.get("prevent_duplicate_orders", True)
+
     for store in state.stores.values():
+        dc_code = store.assigned_dc
         for item in state.items.values():
-            # Calculate 28-day moving average
-            total_past_demand = sum(
-                demand_loader.get_demand(store.store_code, item.item_code, current_date - timedelta(days=d))
-                for d in range(1, 29)
-            )
-            avg_daily = total_past_demand / 28.0
-            
-            target = avg_daily * coverage_days
-            on_hand = state.on_hand_store.get((store.store_code, item.item_code), 0)
-            
-            # Need is rounded to int
-            need = int(max(0, target - on_hand))
-            needs[(store.store_code, item.item_code)] = need
-            
-    return needs
+            key     = (store.store_code, item.item_code)
+            on_hand = state.on_hand_store.get(key, 0)
 
-def create_supplier_orders(state: SimulationState, current_date: date, demand_loader: DemandLoader, exporter: Exporter, dc_coverage_days: int = 21):
-    """
-    Step 8: DC Supplier Ordering (MONDAY ONLY).
-    target - (on_hand + on_order)
-    raw_order_qty rounded up to CasePackSize
-    """
-    from src.models.state import ReceiptEvent
-    
-    order_id_prefix = f"SUP_ORD_{current_date.strftime('%Y%m%d')}"
-    
-    for dc in state.dcs.values():
-        for sup in state.suppliers.values():
-            # Check if this supplier has items
-            sup_items = [i for i in state.items.values() if state.item_supplier[i.item_code] == sup.supplier_code]
-            if not sup_items:
+            # ── Compute 7-day rolling avg demand ────────────────────
+            past_demand = sum(
+                demand_loader.get_demand(
+                    store.store_code, item.item_code,
+                    current_date - timedelta(days=d)
+                )
+                for d in range(1, 8)
+            )
+            avg_daily = past_demand / 7.0
+
+            min_inventory = avg_daily * min_inv_days
+
+            # ── Threshold check ──────────────────────────────────────
+            if on_hand >= min_inventory:
                 continue
-                
-            order_id = f"{order_id_prefix}_{dc.dc_code}_{sup.supplier_code}"
-            header_written = False
-            
-            for item in sup_items:
-                # DC Target: Calculate avg daily demand for all stores assigned to this DC
-                dc_stores = [s for s in state.stores.values() if s.assigned_dc == dc.dc_code]
-                
-                total_past_demand = 0
-                for store in dc_stores:
-                    total_past_demand += sum(
-                        demand_loader.get_demand(store.store_code, item.item_code, current_date - timedelta(days=d))
-                        for d in range(1, 29)
-                    )
-                
-                dc_avg_daily = total_past_demand / 28.0
-                dc_target = dc_avg_daily * dc_coverage_days
-                
-                # Check current state
-                on_hand = state.on_hand_dc.get((dc.dc_code, item.item_code), 0)
-                on_order = state.on_order_dc_qty.get((dc.dc_code, item.item_code), 0)
-                
-                raw_order_qty = max(0, dc_target - (on_hand + on_order))
-                
-                if raw_order_qty > 0:
-                    cp = item.case_pack_size
-                    # Round up to multiple of case pack
-                    order_qty = math.ceil(raw_order_qty / cp) * cp
-                    
-                    if not header_written:
-                        exporter.record_supplier_order_header(order_id, current_date, sup.supplier_code, dc.dc_code)
-                        header_written = True
-                        
-                    # Write line
-                    exporter.record_supplier_order_line(order_id, item.item_code, raw_order_qty, order_qty)
-                    
-                    # Create expected receipt event
-                    lead_time = state.supplier_lead_time_days.get(sup.supplier_code, 5)
-                    arrival = current_date + timedelta(days=lead_time)
-                    
-                    state.expected_receipts.append(ReceiptEvent(
-                        arrival_date=arrival,
-                        item_code=item.item_code,
-                        qty=order_qty,
-                        supplier_code=sup.supplier_code,
-                        dc_code=dc.dc_code
-                    ))
-                    
-                    state.on_order_dc_qty[(dc.dc_code, item.item_code)] += order_qty
+            if prevent_dup and key in state.pending_replenishment:
+                continue
+            if state.on_hand_dc.get((dc_code, item.item_code), 0) <= 0:
+                continue  # DC is dry, nothing to order
+
+            # ── Place order ──────────────────────────────────────────
+            order_qty = int((fh_days + ss_days) * avg_daily)
+            order_qty = max(order_qty, item.case_pack_size)  # at least 1 case pack
+
+            lead_time    = rng.randint(lt_min, lt_max)
+            arrival      = current_date + timedelta(days=lead_time)
+            order_counter[0] += 1
+            order_id     = f"REPR_{current_date.strftime('%Y%m%d')}_{store.store_code}_{item.item_code}_{order_counter[0]}"
+
+            state.in_transit_orders.append(InTransitOrder(
+                order_id    = order_id,
+                store_code  = store.store_code,
+                dc_code     = dc_code,
+                item_code   = item.item_code,
+                qty         = order_qty,
+                arrival_date= arrival,
+            ))
+            if prevent_dup:
+                state.pending_replenishment.add(key)
+
+            exporter.record_replenishment_order(
+                order_id     = order_id,
+                store_code   = store.store_code,
+                dc_code      = dc_code,
+                item_code    = item.item_code,
+                order_date   = current_date,
+                arrival_date = arrival,
+                order_qty    = order_qty,
+            )

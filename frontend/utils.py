@@ -1,75 +1,78 @@
-import pandas as pd
+"""
+utils.py — Data loading and transformation for the Streamlit dashboard.
+"""
 import os
+import pandas as pd
 
-def load_all_data(outputs_dir: str):
-    """Loads and transforms both sales and inventory data from the simulation outputs."""
-    sales_path = os.path.join(outputs_dir, "SalesHistoryInformation.csv")
-    inv_path = os.path.join(outputs_dir, "InventoryInformation.csv")
-    
-    # Load Sales
-    if not os.path.exists(sales_path):
-        sales_df = pd.DataFrame(columns=["WeekEndingDate", "StoreCode", "ItemCode", "SalesQuantity"])
-    else:
-        sales_df = pd.read_csv(sales_path)
-        if "WeekEndingDate" in sales_df.columns:
-             sales_df["WeekEndingDate"] = pd.to_datetime(sales_df["WeekEndingDate"])
-             
-    # Load Inventory
-    if not os.path.exists(inv_path):
-        inv_df = pd.DataFrame(columns=["Date", "LocationType", "LocationCode", "ItemCode", "QuantityOnHand"])
-    else:
-        inv_df = pd.read_csv(inv_path)
-        if "Date" in inv_df.columns:
-            # The simulator records inventory on Sunday, same as WeekEndingDate
-            inv_df["Date"] = pd.to_datetime(inv_df["Date"])
-            
-    return sales_df, inv_df
-    
-def aggregate_dashboard_metrics(sales_df: pd.DataFrame, inv_df: pd.DataFrame, stores: list = None, items: list = None) -> pd.DataFrame:
-    """Filters data based on UI and merges sales with inventory snapshots."""
-    
-    # 1. Process Sales Data
-    s_df = sales_df.copy()
-    if stores:
-        s_df = s_df[s_df["StoreCode"].isin(stores)]
-    if items:
-        s_df = s_df[s_df["ItemCode"].isin(items)]
-        
-    if not s_df.empty:
-        weekly_sales = s_df.groupby("WeekEndingDate")["SalesQuantity"].sum().reset_index()
-        weekly_sales.rename(columns={"WeekEndingDate": "Week", "SalesQuantity": "Total Sales"}, inplace=True)
-    else:
-        weekly_sales = pd.DataFrame(columns=["Week", "Total Sales"])
-        
-    # 2. Process Inventory Data
-    i_df = inv_df.copy()
-    if stores:
-        # Inventory maps StoreCode to LocationCode
-        i_df = i_df[(i_df["LocationCode"].isin(stores)) & (i_df["LocationType"] == "STORE")]
-    if items:
-        i_df = i_df[i_df["ItemCode"].isin(items)]
-        
-    if not i_df.empty:
-        weekly_inv = i_df.groupby("Date")["QuantityOnHand"].sum().reset_index()
-        weekly_inv.rename(columns={"Date": "Week", "QuantityOnHand": "Total Inventory"}, inplace=True)
-    else:
-        weekly_inv = pd.DataFrame(columns=["Week", "Total Inventory"])
-        
-    # 3. Merge together on Week
-    if weekly_sales.empty and weekly_inv.empty:
-        return pd.DataFrame(columns=["Week", "Total Sales", "Total Inventory"])
-        
-    if weekly_sales.empty:
-        merged = weekly_inv
-        merged["Total Sales"] = 0
-        return merged
-        
-    if weekly_inv.empty:
-        merged = weekly_sales
-        merged["Total Inventory"] = 0
-        return merged
-        
-    merged = pd.merge(weekly_sales, weekly_inv, on="Week", how="outer").fillna(0)
-    merged.sort_values("Week", inplace=True)
-    
+
+def get_outputs_dir() -> str:
+    """Returns the absolute path to the outputs/ folder relative to this file."""
+    return os.path.join(os.path.dirname(__file__), "..", "outputs")
+
+
+def load_sales(outputs_dir: str) -> pd.DataFrame:
+    path = os.path.join(outputs_dir, "SalesHistoryInformation.csv")
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
+def load_inventory(outputs_dir: str) -> pd.DataFrame:
+    path = os.path.join(outputs_dir, "InventoryInformation.csv")
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    # Keep only store rows (not DCs)
+    return df[df["SiteCode"].str.startswith("Store_")].copy()
+
+
+def get_stores(sales_df: pd.DataFrame) -> list:
+    return sorted(sales_df["StoreCode"].unique().tolist())
+
+
+def get_items(sales_df: pd.DataFrame, store_code: str) -> list:
+    return sorted(
+        sales_df[sales_df["StoreCode"] == store_code]["ItemCode"].unique().tolist()
+    )
+
+
+def get_chart_data(
+    sales_df: pd.DataFrame,
+    inv_df: pd.DataFrame,
+    store_code: str,
+    item_code: str,
+) -> pd.DataFrame:
+    """
+    Returns a merged DataFrame with columns:
+      WeekId | SalesQuantity | QuantityOnHand
+    sorted by week for plotting.
+    """
+    # Filter sales
+    s = sales_df[
+        (sales_df["StoreCode"] == store_code) &
+        (sales_df["ItemCode"]  == item_code)
+    ][["WeekId", "SalesQuantity"]].copy()
+
+    # Filter inventory snapshot (one row per store/item/week-end)
+    # Map InventoryDate → WeekId using pandas isocalendar
+    inv = inv_df[
+        (inv_df["SiteCode"]  == store_code) &
+        (inv_df["ItemCode"]  == item_code)
+    ][["InventoryDate", "QuantityOnHand"]].copy()
+
+    inv["InventoryDate"] = pd.to_datetime(inv["InventoryDate"])
+    inv["WeekId"] = inv["InventoryDate"].apply(
+        lambda d: f"{d.isocalendar().year}-W{d.isocalendar().week:02d}"
+    )
+    inv = inv[["WeekId", "QuantityOnHand"]]
+
+    if s.empty and inv.empty:
+        return pd.DataFrame(columns=["WeekId", "SalesQuantity", "QuantityOnHand"])
+
+    merged = pd.merge(s, inv, on="WeekId", how="outer").fillna(0)
+    merged["SalesQuantity"]  = merged["SalesQuantity"].astype(int)
+    merged["QuantityOnHand"] = merged["QuantityOnHand"].astype(int)
+
+    # Sort by week string (ISO format sorts correctly lexicographically)
+    merged = merged.sort_values("WeekId").reset_index(drop=True)
     return merged

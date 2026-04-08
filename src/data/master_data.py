@@ -1,70 +1,169 @@
+"""
+master_data.py
+Generates deterministic master data from config.yaml counts.
+Also writes 6 static reference CSVs to outputs/master/ using pandas.
+"""
 import random
+import os
+from datetime import date, timedelta
+
+import pandas as pd
 import yaml
-from typing import Tuple
+
 from src.models.state import SimulationState, Store, DC, Item, Supplier
+
+# ── Category / lifecycle pools ─────────────────────────────────────────────
+CATEGORIES       = ["Snacks", "Beverages", "Dairy", "Frozen", "Household", "Personal Care"]
+VELOCITY_CLASSES = ["fast", "medium", "slow", "lumpy"]
+LIFECYCLES       = ["steady", "growth", "decay", "new_item"]
+SIZE_GROUPS      = ["Small", "Medium", "Large", None]
+
 
 def generate_master_data(config_path: str = "config.yaml", seed: int = 42) -> SimulationState:
     random.seed(seed)
-    
-    # Load constraints from config
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-        
-    site_count_store = config["site_count_store"]
-    site_count_dc = config["site_count_dc"]
-    item_count = config["item_count"]
-    supplier_count = config["supplier_count"]
+
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+
+    n_stores    = cfg["site_count_store"]
+    n_dcs       = cfg["site_count_dc"]
+    n_items     = cfg["item_count"]
+    n_suppliers = cfg["supplier_count"]
 
     state = SimulationState()
-    
-    # 1. Create DCs
-    dc_codes = [f"DC_{str(i).zfill(2)}" for i in range(1, site_count_dc + 1)]
+
+    # 1. DCs
+    dc_codes = [f"DC_{str(i).zfill(2)}" for i in range(1, n_dcs + 1)]
     for code in dc_codes:
         state.dcs[code] = DC(dc_code=code)
-        
-    # 2. Create Stores and assign rough equally mapping
-    for i in range(1, site_count_store + 1):
-        store_code = f"Store_{str(i).zfill(3)}"
-        assigned_dc = dc_codes[i % site_count_dc]
-        state.stores[store_code] = Store(store_code=store_code, assigned_dc=assigned_dc)
-        
-    # 3. Create Suppliers
-    for i in range(1, supplier_count + 1):
-        sup_code = f"SUP_{str(i).zfill(3)}"
-        state.suppliers[sup_code] = Supplier(supplier_code=sup_code)
-        state.supplier_lead_time_days[sup_code] = random.randint(2, 7)
-        state.supplier_items[sup_code] = []
-        
-    # 4. Create Items
-    supplier_list = list(state.suppliers.keys())
-    for i in range(1, item_count + 1):
-        item_code = f"ITEM_{str(i).zfill(4)}"
-        case_pack = random.choice([6, 12, 24, 48, 100])
-        state.items[item_code] = Item(item_code=item_code, case_pack_size=case_pack)
-        
-        # Distribute items uniformly across suppliers
-        sup = supplier_list[i % len(supplier_list)]
-        state.item_supplier[item_code] = sup
-        state.supplier_items[sup].append(item_code)
-        
-    # Initialize all inventory limits
-    for s_code in state.stores:
-        for i_code in state.items:
-            state.on_hand_store[(s_code, i_code)] = 0
-            
-    for d_code in state.dcs:
-        for i_code in state.items:
-            state.on_hand_dc[(d_code, i_code)] = 0
-            state.on_order_dc_qty[(d_code, i_code)] = 0
-            
-    # VALIDATION CHECKS
-    if len(state.stores) != 25:
-        raise ValueError(f"Expected 25 stores, but generated {len(state.stores)}")
-    if len(state.items) != 200:
-        raise ValueError(f"Expected 200 items, but generated {len(state.items)}")
-    if len(state.suppliers) != 15:
-        raise ValueError(f"Expected 15 suppliers, but generated {len(state.suppliers)}")
-    if len(state.dcs) != 2:
-        raise ValueError(f"Expected 2 DCs, but generated {len(state.dcs)}")
-            
+
+    # 2. Stores
+    for i in range(1, n_stores + 1):
+        code = f"Store_{str(i).zfill(3)}"
+        dc   = dc_codes[i % n_dcs]
+        state.stores[code] = Store(store_code=code, assigned_dc=dc)
+
+    # 3. Suppliers
+    for i in range(1, n_suppliers + 1):
+        code = f"SUP_{str(i).zfill(3)}"
+        cat  = random.choice(CATEGORIES)
+        state.suppliers[code] = Supplier(
+            supplier_code=code,
+            supplier_name=f"Supplier {i}",
+            category=cat,
+        )
+        state.supplier_lead_time_days[code] = random.randint(14, 49)  # 2–7 weeks
+        state.supplier_items[code] = []
+
+    # 4. Items — uniformly assigned to suppliers
+    sup_list = list(state.suppliers.keys())
+    for i in range(1, n_items + 1):
+        code       = f"ITEM_{str(i).zfill(4)}"
+        case_pack  = random.choice([6, 12, 24, 48, 100])
+        category   = random.choice(CATEGORIES)
+        velocity   = random.choice(VELOCITY_CLASSES)
+        lifecycle  = random.choice(LIFECYCLES)
+        sg         = random.choice(SIZE_GROUPS)
+        unit_cost  = round(random.uniform(0.5, 50.0), 2)
+
+        state.items[code] = Item(
+            item_code       = code,
+            case_pack_size  = case_pack,
+            category        = category,
+            velocity_class  = velocity,
+            lifecycle_profile= lifecycle,
+            size_group      = sg,
+            size_rank       = str(random.randint(1, 5)) if sg else None,
+            unit_cost       = unit_cost,
+        )
+        sup = sup_list[i % len(sup_list)]
+        state.item_supplier[code] = sup
+        state.supplier_items[sup].append(code)
+
+    # 5. Initialise all inventory to 0 (seeded later by SimulationEngine)
+    for s in state.stores:
+        for it in state.items:
+            state.on_hand_store[(s, it)]   = 0
+    for dc in state.dcs:
+        for it in state.items:
+            state.on_hand_dc[(dc, it)]     = 0
+            state.on_order_dc_qty[(dc, it)]= 0
+
+    # 6. Validation
+    assert len(state.stores)    == n_stores,    f"Expected {n_stores} stores, got {len(state.stores)}"
+    assert len(state.items)     == n_items,     f"Expected {n_items} items, got {len(state.items)}"
+    assert len(state.dcs)       == n_dcs,       f"Expected {n_dcs} DCs, got {len(state.dcs)}"
+
     return state
+
+
+def write_master_csvs(state: SimulationState, output_dir: str, config: dict):
+    """Write 6 static reference tables to outputs/master/ using pandas."""
+    master_dir = os.path.join(output_dir, "master")
+    os.makedirs(master_dir, exist_ok=True)
+
+    # ── SiteInformation ──────────────────────────────────────────────
+    site_rows = []
+    for s in state.stores.values():
+        site_rows.append({"SiteCode": s.store_code, "SiteType": "STORE", "ParentDC": s.assigned_dc})
+    for dc in state.dcs.values():
+        site_rows.append({"SiteCode": dc.dc_code, "SiteType": "DC", "ParentDC": None})
+    pd.DataFrame(site_rows).to_csv(os.path.join(master_dir, "SiteInformation.csv"), index=False)
+
+    # ── ItemInformation ───────────────────────────────────────────────
+    item_rows = [
+        {
+            "ItemCode":        it.item_code,
+            "Category":        it.category,
+            "VelocityClass":   it.velocity_class,
+            "LifecycleProfile":it.lifecycle_profile,
+            "CasePackSize":    it.case_pack_size,
+            "SizeGroup":       it.size_group,
+            "SizeRank":        it.size_rank,
+            "UnitCost":        it.unit_cost,
+        }
+        for it in state.items.values()
+    ]
+    pd.DataFrame(item_rows).to_csv(os.path.join(master_dir, "ItemInformation.csv"), index=False)
+
+    # ── SupplierInformation ───────────────────────────────────────────
+    sup_rows = [
+        {"SupplierCode": s.supplier_code, "SupplierName": s.supplier_name, "Category": s.category}
+        for s in state.suppliers.values()
+    ]
+    pd.DataFrame(sup_rows).to_csv(os.path.join(master_dir, "SupplierInformation.csv"), index=False)
+
+    # ── CalendarPeriod ────────────────────────────────────────────────
+    sim_days  = config.get("simulation_days", 364)
+    start_str = config.get("start_date", "2024-01-01")
+    start_dt  = date.fromisoformat(start_str)
+    cal_rows  = []
+    for d in range(sim_days):
+        cd = start_dt + timedelta(days=d)
+        iso = cd.isocalendar()
+        cal_rows.append({
+            "CalendarDate":  cd.strftime("%Y-%m-%d"),
+            "WeekId":        f"{iso.year}-W{iso.week:02d}",
+            "WeekStartDate": (cd - timedelta(days=cd.weekday())).strftime("%Y-%m-%d"),
+            "MonthId":       cd.strftime("%Y-%m"),
+            "QuarterId":     f"{cd.year}-Q{(cd.month - 1) // 3 + 1}",
+            "YearId":        cd.year,
+            "DayOfWeek":     cd.strftime("%A"),
+            "IsWeekend":     cd.weekday() >= 5,
+        })
+    pd.DataFrame(cal_rows).to_csv(os.path.join(master_dir, "CalendarPeriod.csv"), index=False)
+
+    # ── Currency ─────────────────────────────────────────────────────
+    pd.DataFrame([
+        {"CurrencyCode": "USD", "CurrencyName": "US Dollar", "ExchangeRate": 1.0},
+        {"CurrencyCode": "INR", "CurrencyName": "Indian Rupee", "ExchangeRate": 83.5},
+    ]).to_csv(os.path.join(master_dir, "Currency.csv"), index=False)
+
+    # ── PromoEvents (empty scaffold) ─────────────────────────────────
+    pd.DataFrame(columns=[
+        "PromoEventId", "ItemCode", "SiteCode", "EventType",
+        "PromoStartDate", "PromoEndDate", "DemandMultiplier",
+        "PostPromoDecayDays", "PostPromoDecayShape", "Category",
+    ]).to_csv(os.path.join(master_dir, "PromoEvents.csv"), index=False)
+
+    print(f"  Master CSVs written to {master_dir}/")

@@ -1,4 +1,25 @@
-site_count_store: 25
+# ─── Master Data Counts ────────────────────────────────────
+site_count_store: 4
 site_count_dc: 2
-item_count: 200
-supplier_count: 15
+item_count: 1
+supplier_count: 2
+
+# ─── Simulation ────────────────────────────────────────────
+seed: 42
+simulation_days: 70
+start_date: "2024-01-01"
+
+# ─── Fixed Starting Inventory ──────────────────────────────
+store_initial_stock: 100     # every store starts with exactly 100 units
+dc_initial_stock: 4000       # every DC starts with exactly 4000 units
+
+# ─── Replenishment (DC → Store, threshold-based) ───────────
+replenishment:
+  lead_time_min_days: 1
+  lead_time_max_days: 2
+  forecast_horizon_days: 4
+  safety_stock_days: 1
+  prevent_duplicate_orders: true
+
+replenishment_defaults:
+  min_inventory_days: 2
